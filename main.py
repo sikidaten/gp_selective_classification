@@ -22,7 +22,7 @@ test_compose = transforms.Compose(common_trans)
 
 dataset = "cifar10"
 modelname="resnet50"
-runname=f"denseOriAdd0.25"
+runname=f"DenseOri"
 
 
 if ('CI' in os.environ):  # this is for running the notebook in our testing framework
@@ -54,14 +54,14 @@ class DenseNetFeatureExtractor(TM.DenseNet):
         out = F.avg_pool2d(out, kernel_size=2).view(features.size(0), -1)
         return out
 
-# feature_extractor=TM.DenseNet(block_config=(6,6,6))
-feature_extractor=TM.get_model(modelname)
+feature_extractor=TM.DenseNet(block_config=(6,6,6))
+# feature_extractor=TM.get_model(modelname)
 if hasattr(feature_extractor,"fc"):
     num_features = feature_extractor.fc.in_features
     feature_extractor.fc=nn.Identity()
 elif hasattr(feature_extractor,"classifier"):
-    feature_extractor.classifier=nn.Identity()
     num_features = feature_extractor.classifier.in_features
+    feature_extractor.classifier=nn.Identity()
 else:
     assert False,"Couldnt disable fc layer."
 
