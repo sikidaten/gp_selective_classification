@@ -10,6 +10,7 @@ import torchvision.models as TM
 import gpytorch
 import math
 import tqdm
+from torch.utils.tensorboard import SummaryWriter  # TensorBoardライターをインポート
 
 from sac import SelectiveAccuracyConstraint
 
@@ -21,6 +22,7 @@ test_compose = transforms.Compose(common_trans)
 
 dataset = "cifar10"
 modelname="resnet50"
+runname=f"denseOriAdd0.25"
 
 
 if ('CI' in os.environ):  # this is for running the notebook in our testing framework
@@ -136,14 +138,17 @@ optimizer = SGD([
 scheduler = MultiStepLR(optimizer, milestones=[0.5 * n_epochs, 0.75 * n_epochs], gamma=0.1)
 mll = gpytorch.mlls.VariationalELBO(likelihood, model.gp_layer, num_data=len(train_loader.dataset))
 
+# TensorBoardライターの初期化
+writer = SummaryWriter(log_dir=f"runs/{runname}")
 
 def train(epoch):
     model.train()
     likelihood.train()
 
     minibatch_iter = tqdm.tqdm(train_loader, desc=f"(Epoch {epoch}) Minibatch")
+    epoch_loss = 0  # エポック全体の損失を記録
     with gpytorch.settings.num_likelihood_samples(8):
-        for data, target in minibatch_iter:
+        for batch_idx, (data, target) in enumerate(minibatch_iter):
             if torch.cuda.is_available():
                 data, target = data.cuda(), target.cuda()
             optimizer.zero_grad()
@@ -152,32 +157,46 @@ def train(epoch):
             loss.backward()
             optimizer.step()
             minibatch_iter.set_postfix(loss=loss.item())
+            epoch_loss += loss.item()
 
-def test():
+            # ミニバッチごとの損失をTensorBoardに記録
+            writer.add_scalar("Loss/Train", loss.item(), epoch * len(train_loader) + batch_idx)
+
+    # エポック全体の平均損失をTensorBoardに記録
+    writer.add_scalar("Loss/Epoch", epoch_loss / len(train_loader), epoch)
+
+def test(epoch):
     model.eval()
     likelihood.eval()
-    sacmtr=SelectiveAccuracyConstraint()
+    sacmtr = SelectiveAccuracyConstraint()
 
     correct = 0
+    total = 0
     with torch.no_grad(), gpytorch.settings.num_likelihood_samples(16):
         for data, target in test_loader:
             if torch.cuda.is_available():
                 data, target = data.cuda(), target.cuda()
             output = likelihood(model(data))  # This gives us 16 samples from the predictive distribution
             pred = output.probs.mean(0).argmax(-1)  # Taking the mean over all of the sample we've drawn
-            correct += pred.eq(target.view_as(pred)).cpu().sum()
-            conf,_=output.probs.mean(0).max(1)
-            sacmtr.update(conf,pred.eq(target.view_as(pred)))
-    print('Test set: Accuracy: {}/{} ({}%) EC:{}'.format(
-        correct, len(test_loader.dataset), 100. * correct / float(len(test_loader.dataset)),sacmtr.compute()
-    ))
+            correct += pred.eq(target.view_as(pred)).cpu().sum().item()
+            total += target.size(0)
+            conf, _ = output.probs.mean(0).max(1)
+            sacmtr.update(conf, pred.eq(target.view_as(pred)))
 
+    accuracy = 100. * correct / total
+    sac = sacmtr.compute()
+
+    # テスト結果をTensorBoardに記録
+    writer.add_scalar("Accuracy/Test", accuracy, epoch)
+    writer.add_scalar("SAC/Test", sac, epoch)
+
+    print('Test set: Accuracy: {}/{} ({}%) EC:{}'.format(
+        correct, len(test_loader.dataset), accuracy, sac
+    ))
 
 for epoch in range(1, n_epochs + 1):
     with gpytorch.settings.use_toeplitz(False):
         train(epoch)
-        test()
+        test(epoch)
     scheduler.step()
-    state_dict = model.state_dict()
-    likelihood_state_dict = likelihood.state_dict()
-    # torch.save({'model': state_dict, 'likelihood': likelihood_state_dict}, 'dkl_cifar_checkpoint.dat')
+    writer.flush()
