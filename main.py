@@ -20,6 +20,7 @@ train_compose = transforms.Compose(aug_trans + common_trans)
 test_compose = transforms.Compose(common_trans)
 
 dataset = "cifar10"
+modelname="resnet50"
 
 
 if ('CI' in os.environ):  # this is for running the notebook in our testing framework
@@ -51,8 +52,17 @@ class DenseNetFeatureExtractor(TM.DenseNet):
         out = F.avg_pool2d(out, kernel_size=2).view(features.size(0), -1)
         return out
 
-feature_extractor = DenseNetFeatureExtractor(block_config=(6, 6, 6), num_classes=num_classes)
-num_features = feature_extractor.classifier.in_features
+# feature_extractor=TM.DenseNet(block_config=(6,6,6))
+feature_extractor=TM.get_model(modelname)
+if hasattr(feature_extractor,"fc"):
+    num_features = feature_extractor.fc.in_features
+    feature_extractor.fc=nn.Identity()
+elif hasattr(feature_extractor,"classifier"):
+    feature_extractor.classifier=nn.Identity()
+    num_features = feature_extractor.classifier.in_features
+else:
+    assert False,"Couldnt disable fc layer."
+
 
 class GaussianProcessLayer(gpytorch.models.ApproximateGP):
     def __init__(self, num_dim, grid_bounds=(-10., 10.), grid_size=64):
